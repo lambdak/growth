@@ -1,0 +1,177 @@
+---
+title: 'Growth Report '
+author: "Social Atom Group Voice123"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list = ls())
+path<-"/media/maku/DATA/Nueva_carpeta_7/Datasets/subscriptions_pro_amount/"
+period<-"year"
+setwd(path)
+
+library(dplyr)
+library(lubridate)
+library(sqldf)
+library(chron)
+library(xlsx)
+library(zoo)
+library(xts)
+library(ggplot2)
+library(reshape)
+library(reshape2)
+library(survival)
+```
+
+## Summary
+This is a growth report based on state of the art research studies for tech startups growth.
+When you identify any **questions or problems** please let us know to improve our methods and documentation.
+```{r Cohorts Retention ratio dynamics, echo=FALSE}
+data_1a<-read.csv("subscriptions_pro_amount.csv", header = TRUE)
+data_1b<-read.csv("subscriptions_pro.csv", header = TRUE)
+
+data_2<-merge(data_1b[, c("key","user_id","time_stamp")],data_1a[, c("key", "amount")])
+data_2<-data_2[,-1]
+data_2f<-data_2
+colnames(data_2f)<-c("user_id","date_confirmed","revenue");
+
+data_2f$date_confirmed_w<-format(floor_date(as.Date((data_2f$date_confirmed),format="%m/%d/%Y %H:%M %p",origin = "1970-01-01")-1, period), format="%Y-%m-%d")
+data_3 <- sqldf("select date_confirmed_w, user_id, sum(revenue) as revenue from data_2f group by date_confirmed_w, user_id order by date_confirmed_w")
+data_4<-sqldf("select cohort_w, date_confirmed_w, data_3.user_id, revenue FROM data_3, (select user_id, min(date_confirmed_w) AS cohort_w from data_3 group by user_id) AS B where data_3.user_id=B.user_id")
+data_5 <- sqldf("select cohort_w as cohort_month, date_confirmed_w as activity_month, count(user_id) as users, sum(revenue) as revenue from data_4 group by cohort_month, activity_month order by cohort_month, activity_month")
+
+data_5$cohort_month<-as.Date(data_5$cohort_month,format="%Y-%m-%d",origin = "1970-01-01")
+data_5$activity_month<-as.Date(data_5$activity_month,format="%Y-%m-%d",origin = "1970-01-01")
+
+a<-seq(min(data_5$cohort_month), max(data_5$cohort_month), by = period)
+R<-rep(a, each=length(a))
+go<-cbind(R,a,0,0)
+colnames(go)<-c("cohort_month","activity_month","users","revenue")
+go<-as.data.frame(go)
+go$cohort_month<-as.Date(as.numeric(go$cohort_month),origin = "1970-01-01")
+go$activity_month<-as.Date(as.numeric(go$activity_month),origin = "1970-01-01")
+data_5<-rbind(data_5,go)
+data_5<-sqldf("select cohort_month, activity_month, sum(users) as users, sum(revenue) as revenue from data_5 group by cohort_month, activity_month order by cohort_month, activity_month")
+data_5$diffdays<-data_5$activity_month-data_5$cohort_month
+data_5<-data_5[data_5[, "diffdays"]>=0,];
+data_5<-data_5[,1:4];
+
+colnames(data_5)<-c("cohort_month","activity_month","users","revenue")
+
+
+
+#data_5<-with(data_5, data_5[(cohort_period >= "2015-06-01" & cohort_period <= "2017-12-01"), ])
+#a<-seq(min(data_5$cohort_period), max(data_5$cohort_period), by = period)
+top_cohorts<-sqldf("select cohort_month, count(cohort_month) as num_cohort from data_5 group by cohort_month order by num_cohort desc")
+cohort_1<-top_cohorts[1,1]
+cohort_2<-top_cohorts[2,1]
+retention_matrix<-cast(data_5,cohort_month~activity_month,value="users");
+revenue_matrix<-cast(data_5,cohort_month~activity_month,value="revenue");
+retention_matrix[is.na(retention_matrix)] <- 0
+revenue_matrix[is.na(revenue_matrix)] <- 0
+cohort.clients.r <- retention_matrix #create new data frame
+totcols <- ncol(cohort.clients.r) #count number of columns in data set
+for (i in 1:nrow(cohort.clients.r)) { #for loop for shifting each row
+  df <- cohort.clients.r[i,] #select row from data frame
+  df <- df[ , !df[]==0] #remove columns with zeros
+  partcols <- ncol(df) #count number of columns in row (w/o zeros)
+  #fill columns after values by zeros
+  if (partcols < totcols) df[, c((partcols+1):totcols)] <- 0
+  cohort.clients.r[i,] <- df #replace initial row by new one
+}
+x <- cohort.clients.r[,c(2:length(a)+1)]
+y <- cohort.clients.r[,2]
+reten.r <- apply(x, 2, function(x) x/y )
+reten.r <- data.frame(cohort=(cohort.clients.r$cohort), reten.r)
+reten.r <- reten.r[,-2];
+#dynamics analysis chart
+cohort.chart1 <- melt(reten.r, id.vars = 'cohort')
+colnames(cohort.chart1) <- c('cohort', period, 'retention')
+cohort.chart1 <- filter(cohort.chart1, retention != 0)
+eval(parse(text=(paste("cohort.chart1$",period,"<-as.numeric(gsub(\"X\", \"\", as.character(cohort.chart1$",period,")))",sep=""))))
+eval(parse(text=(paste("p <- ggplot(cohort.chart1, aes(x=",period,", y=retention, group=cohort, colour=cohort))",sep=""))))
+p + geom_line(size=2, alpha=1/2) +
+  geom_point(size=3, alpha=1) +
+  geom_smooth(aes(group=1), method = 'loess', size=2, colour='red', se=FALSE) +
+  labs(title="Cohorts Retention ratio dynamics")
+```
+
+
+## Number of Customers Who Purchased - Calendar View
+```{r number of customers who purchased - calendar view, echo=FALSE}
+data_5$cohort_month<-as.numeric(data_5$cohort_month)
+data_5$activity_month<-as.numeric(data_5$activity_month)
+data_5$period.lt<-ave(data_5$cohort_month, data_5$cohort_month, FUN=seq_along)
+data_5$cohort_month<-as.Date(as.numeric(data_5$cohort_month),origin = "1970-01-01")
+data_5$activity_month<-as.Date(as.numeric(data_5$activity_month),origin = "1970-01-01")
+colnames(data_5)<-c("cohort","date","num","gr.marg","period.lt")
+data_5$cohort<-as.Date(data_5$cohort,format="%Y-%m-%d",origin = "1970-01-01")
+data_5$date<-as.Date(data_5$date,format="%Y-%m-%d",origin = "1970-01-01")
+cohorts<-data_5
+cohorts$av<-ifelse(!cohorts$gr.marg, 0, cohorts$gr.marg/cohorts$num)
+
+#calculating CLV to date
+cohorts <- cohorts %>%
+  group_by(cohort) %>%
+  mutate(clv=cumsum(gr.marg)/num[period.lt=='1']) %>%
+  ungroup()
+
+#color palette
+cols <- c("#e7f0fa", "#c9e2f6", "#95cbee", "#0099dc", "#4ab04a", "#ffd73e", "#eec73a", "#e29421", "#e29421", "#f05336", "#ce472e")
+
+#Heatmap based on Number of active customers
+t <- max(cohorts$num)
+
+ggplot(cohorts, aes(y=cohort, x=date, fill=num)) +
+  theme_minimal() +
+  geom_tile(colour="white", width=.9, height=.9) +
+  scale_fill_gradientn(colours=cols, limits=c(0, t),
+                       breaks=seq(0, t, by=t/4),
+                       labels=c("0", round(t/4*1, 1), round(t/4*2, 1), round(t/4*3, 1), round(t/4*4, 1)),
+                       guide=guide_colourbar(ticks=T, nbin=50, barheight=.5, label=T, barwidth=10)) +
+  theme(legend.position='bottom',
+        legend.direction="horizontal",
+        plot.title = element_text(size=20, face="bold", vjust=2),
+        axis.text.x=element_text(size=8, angle=90, hjust=.5, vjust=.5, face="plain")) +
+  ggtitle("Cohort Activity Heatmap (number of customers who purchased - calendar view)")
+```
+
+## Number of Customers Who Purchased - Lifetime View
+```{r number of customers who purchased - lifetime view, echo=FALSE}
+ggplot(cohorts, aes(y=cohort, x=period.lt, fill=num)) +
+  theme_minimal() +
+  geom_tile(colour="white", width=.9, height=.9) +
+  scale_fill_gradientn(colours=cols, limits=c(0, t),
+                       breaks=seq(0, t, by=t/4),
+                       labels=c("0", round(t/4*1, 1), round(t/4*2, 1), round(t/4*3, 1), round(t/4*4, 1)),
+                       guide=guide_colourbar(ticks=T, nbin=50, barheight=.5, label=T, barwidth=10)) +
+  theme(legend.position='bottom',
+        legend.direction="horizontal",
+        plot.title = element_text(size=20, face="bold", vjust=2),
+        axis.text.x=element_text(size=8, angle=90, hjust=.5, vjust=.5, face="plain")) +
+  ggtitle("Cohort Activity Heatmap (number of customers who purchased - lifetime view)")
+```
+
+## Cake Layer - Lifetime View
+```{r Cake Layer Graphic , echo=FALSE}
+cohort.chart<-data_5[,c(1:3)]
+colnames(cohort.chart) <- c('cohort', 'month', 'users')
+cohort.chart$cohort<-as.Date(cohort.chart$cohort)
+cohort.chart$month<-as.Date(cohort.chart$month)
+
+#define palette
+#blues <- colorRampPalette(c('lightblue', 'darkblue'))
+
+#plot data
+p <- ggplot(cohort.chart, aes(x=month, y=users, group=cohort))
+p + geom_area(aes(fill = cohort), position = position_stack(reverse = TRUE)) +
+  scale_colour_hue() +
+#  scale_fill_manual(values = blues(length(unique(cohort.chart$cohort)))) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle('Total revenue by Cohort')
+```
+
